@@ -88,7 +88,7 @@ describe("agent image", { timeout: 300_000 }, () => {
       if (result.exitCode === 0) break;
       await sleep(1_000);
     }
-  });
+  }, 300_000);
 
   afterAll(() => {
     try {
