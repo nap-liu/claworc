@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, createElement } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
+import { successToast, errorToast, infoToast } from "@/utils/toast";
+import AppToast from "@/components/AppToast";
 import {
   fetchInstances,
   fetchInstance,
@@ -51,10 +53,10 @@ export function useUpdateInstance() {
     onSuccess: (_data, { id }) => {
       qc.invalidateQueries({ queryKey: ["instances", id] });
       qc.invalidateQueries({ queryKey: ["instances"] });
-      toast.success("Instance updated");
+      successToast("Instance updated");
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.detail || "Failed to update instance");
+      errorToast("Failed to update instance", error);
     },
   });
 }
@@ -65,13 +67,11 @@ export function useCloneInstance() {
     mutationFn: ({ id }: { id: number; displayName: string }) =>
       cloneInstance(id),
     onSuccess: (_data, { displayName }) => {
-      toast(`Cloning ${displayName}`);
+      infoToast("Cloning instance", displayName);
       qc.invalidateQueries({ queryKey: ["instances"] });
     },
     onError: (error: any, { displayName }) => {
-      toast.error(
-        error.response?.data?.detail || `Failed to clone ${displayName}`,
-      );
+      errorToast(`Failed to clone ${displayName}`, error);
     },
   });
 }
@@ -82,7 +82,7 @@ export function useDeleteInstance() {
     mutationFn: (id: number) => deleteInstance(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["instances"] }),
     onError: (error: any) => {
-      toast.error(error.response?.data?.detail || "Failed to delete instance");
+      errorToast("Failed to delete instance", error);
     },
   });
 }
@@ -101,13 +101,11 @@ export function useStopInstance() {
     mutationFn: ({ id }: { id: number; displayName: string }) =>
       stopInstance(id),
     onSuccess: (_data, { displayName }) => {
-      toast(`Stopping ${displayName}`);
+      infoToast("Stopping instance", displayName);
       qc.invalidateQueries({ queryKey: ["instances"] });
     },
     onError: (error: any, { displayName }) => {
-      toast.error(
-        error.response?.data?.detail || `Failed to stop ${displayName}`,
-      );
+      errorToast(`Failed to stop ${displayName}`, error);
     },
   });
 }
@@ -118,13 +116,11 @@ export function useRestartInstance() {
     mutationFn: ({ id }: { id: number; displayName: string }) =>
       restartInstance(id),
     onSuccess: (_data, { displayName }) => {
-      toast(`Restarting ${displayName}`);
+      infoToast("Restarting instance", displayName);
       qc.invalidateQueries({ queryKey: ["instances"] });
     },
     onError: (error: any, { displayName }) => {
-      toast.error(
-        error.response?.data?.detail || `Failed to restart ${displayName}`,
-      );
+      errorToast(`Failed to restart ${displayName}`, error);
     },
   });
 }
@@ -138,12 +134,54 @@ export function useRestartedToast(instances: Instance[] | undefined) {
     const prev = prevRef.current;
     for (const inst of instances) {
       if (prev.get(inst.id) === "restarting" && inst.status === "running") {
-        toast.success(`Restarted ${inst.display_name}`);
+        successToast("Instance restarted", inst.display_name);
       }
       if (prev.get(inst.id) === "stopping" && inst.status === "stopped") {
-        toast.success(`Stopped ${inst.display_name}`);
+        successToast("Instance stopped", inst.display_name);
       }
       prev.set(inst.id, inst.status);
+    }
+  }, [instances]);
+}
+
+/** Show a persistent toast tracking creation progress for instances in "creating" status. */
+export function useCreationToast(instances: Instance[] | undefined) {
+  const activeRef = useRef<Map<number, string>>(new Map());
+
+  useEffect(() => {
+    if (!instances) return;
+    const active = activeRef.current;
+    const currentIds = new Set<number>();
+
+    for (const inst of instances) {
+      if (inst.status === "creating") {
+        currentIds.add(inst.id);
+        const toastId = `creation-${inst.id}`;
+        active.set(inst.id, toastId);
+        toast.custom(
+          createElement(AppToast, {
+            title: inst.display_name,
+            description: inst.status_message || "Starting...",
+            status: "loading",
+            toastId,
+          }),
+          { id: toastId, duration: Infinity },
+        );
+      } else if (active.has(inst.id)) {
+        // Transitioned away from "creating" — show final state briefly
+        const toastId = active.get(inst.id)!;
+        const isSuccess = inst.status === "running";
+        toast.custom(
+          createElement(AppToast, {
+            title: inst.display_name,
+            description: isSuccess ? "Instance ready" : (inst.status_message || "Creation failed"),
+            status: isSuccess ? "success" : "error",
+            toastId,
+          }),
+          { id: toastId, duration: isSuccess ? 4000 : 8000 },
+        );
+        active.delete(inst.id);
+      }
     }
   }, [instances]);
 }
@@ -164,7 +202,7 @@ export function useReorderInstances() {
     mutationFn: (orderedIds: number[]) => reorderInstances(orderedIds),
     onError: () => {
       qc.invalidateQueries({ queryKey: ["instances"] });
-      toast.error("Failed to reorder instances");
+      errorToast("Failed to reorder instances");
     },
   });
 }

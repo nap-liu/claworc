@@ -1,8 +1,9 @@
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
-import toast from "react-hot-toast";
+import { errorToast } from "@/utils/toast";
 import InstanceForm from "@/components/InstanceForm";
 import { useCreateInstance } from "@/hooks/useInstances";
+
 
 export default function CreateInstancePage() {
   const navigate = useNavigate();
@@ -27,21 +28,13 @@ export default function CreateInstancePage() {
           onSubmit={(payload) =>
             createMutation.mutate(payload, {
               onSuccess: () => {
-                toast.success("Initializing", {
-                  duration: 3000,
-                });
                 navigate("/");
               },
               onError: (error: any) => {
                 if (error.response?.status === 409) {
-                  toast.error("Instance with the same name already exists", {
-                    duration: 4000,
-                  });
+                  errorToast("Failed to create instance", "An instance with the same name already exists");
                 } else {
-                  toast.error(
-                    error.response?.data?.detail || "Failed to create instance",
-                    { duration: 4000 }
-                  );
+                  errorToast("Failed to create instance", error);
                 }
               },
             })
