@@ -5,5 +5,6 @@ export default defineConfig({
     testTimeout: 30_000,
     hookTimeout: 960_000,
     globalSetup: "./global-setup.ts",
+    reporters: ["verbose", "github-actions"],
   },
 });
