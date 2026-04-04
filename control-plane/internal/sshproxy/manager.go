@@ -72,6 +72,11 @@ type SSHManager struct {
 
 	// Connection rate limiter (has its own mutex)
 	rateLimiter *RateLimiter
+
+	// Host key store for Trust On First Use (TOFU) verification.
+	// Maps instance ID to the host key seen on first connection.
+	hostKeyMu sync.RWMutex
+	hostKeys  map[uint]ssh.PublicKey
 }
 
 // managedConn wraps an SSH client with its cancel function for stopping keepalive.
@@ -86,6 +91,50 @@ func (m *SSHManager) getSigner() ssh.Signer {
 	m.keyMu.RLock()
 	defer m.keyMu.RUnlock()
 	return m.signer
+}
+
+// hostKeyCallback returns a Trust On First Use (TOFU) host key callback for the
+// given instance. On first connection, the host key is stored. On subsequent
+// connections, the stored key must match the previously seen key. A mismatch
+// returns an error — callers must call ClearHostKey before reconnecting to an
+// instance whose host key has legitimately changed (e.g., container restart).
+func (m *SSHManager) hostKeyCallback(instanceID uint) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		m.hostKeyMu.RLock()
+		known, exists := m.hostKeys[instanceID]
+		m.hostKeyMu.RUnlock()
+
+		if !exists {
+			m.hostKeyMu.Lock()
+			// Double-check after acquiring write lock.
+			if known2, exists2 := m.hostKeys[instanceID]; exists2 {
+				m.hostKeyMu.Unlock()
+				if string(known2.Marshal()) != string(key.Marshal()) {
+					return fmt.Errorf("host key mismatch for instance %d: expected %s, got %s",
+						instanceID, ssh.FingerprintSHA256(known2), ssh.FingerprintSHA256(key))
+				}
+				return nil
+			}
+			m.hostKeys[instanceID] = key
+			log.Printf("[ssh] Stored host key for instance %d (%s %s)",
+				instanceID, key.Type(), ssh.FingerprintSHA256(key))
+			m.hostKeyMu.Unlock()
+			return nil
+		}
+
+		if string(known.Marshal()) != string(key.Marshal()) {
+			return fmt.Errorf("host key mismatch for instance %d: expected %s, got %s",
+				instanceID, ssh.FingerprintSHA256(known), ssh.FingerprintSHA256(key))
+		}
+		return nil
+	}
+}
+
+// ClearHostKey removes the stored host key for an instance (e.g., when it is deleted).
+func (m *SSHManager) ClearHostKey(instanceID uint) {
+	m.hostKeyMu.Lock()
+	delete(m.hostKeys, instanceID)
+	m.hostKeyMu.Unlock()
 }
 
 // getPublicKey returns the current public key string, safe for concurrent use during key rotation.
@@ -117,6 +166,7 @@ func NewSSHManager(privateKey ssh.Signer, publicKey string) *SSHManager {
 		stateTracker: newStateTracker(),
 		eventLog:     newEventLog(),
 		rateLimiter:  NewRateLimiter(),
+		hostKeys:     make(map[uint]ssh.PublicKey),
 	}
 }
 
@@ -141,8 +191,17 @@ func (m *SSHManager) Connect(ctx context.Context, instanceID uint, host string, 
 		Auth: []ssh.AuthMethod{
 			ssh.PublicKeys(m.getSigner()),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: m.hostKeyCallback(instanceID),
 		Timeout:         connectTimeout,
+	}
+
+	// If reconnecting (existing entry in conns), clear the stored host key
+	// because the container may have restarted with a new host key.
+	m.mu.RLock()
+	_, hadExisting := m.conns[instanceID]
+	m.mu.RUnlock()
+	if hadExisting {
+		m.ClearHostKey(instanceID)
 	}
 
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))

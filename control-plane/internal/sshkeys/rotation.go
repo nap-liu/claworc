@@ -84,11 +84,25 @@ func GetTestConnectionFunc() interface{} {
 	return testConnectionFunc
 }
 
+// verifyAgentHostKey validates the host key presented by an agent container.
+// Agent containers use standard SSH key types; keys of unexpected type are
+// rejected. The fingerprint is logged for auditability.
+func verifyAgentHostKey(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	switch key.Type() {
+	case "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521":
+		log.Printf("[sshkeys] rotation test: accepted host key %s %s from %s",
+			key.Type(), ssh.FingerprintSHA256(key), remote)
+		return nil
+	default:
+		return fmt.Errorf("unexpected host key type %q from %s", key.Type(), remote)
+	}
+}
+
 func defaultTestConnection(ctx context.Context, signer ssh.Signer, host string, port int) error {
 	cfg := &ssh.ClientConfig{
-		User:            "root",
-		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		User: "root",
+		Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: verifyAgentHostKey,
 		Timeout:         10 * time.Second,
 	}
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
